@@ -1,0 +1,241 @@
+/*
+ * Home Assistant TV – remote-control navigation.
+ *
+ * Injected into every Home Assistant page. Makes the TV remote's arrow keys move a
+ * clearly visible highlight between tiles, view tabs and buttons (spatial navigation,
+ * looking inside Home Assistant's shadow DOM), OK activates the highlighted item, and
+ * window.__hatvBack() lets the app's Back button close pop-ups first.
+ */
+(function () {
+  if (window.__hatvInstalled) return;
+  window.__hatvInstalled = true;
+
+  var HIGHLIGHT = '4px solid #22D3C5';
+  var current = null;
+  var saved = null; // original inline styles of the highlighted element
+
+  var ROLES = ['button', 'tab', 'switch', 'checkbox', 'slider', 'link', 'menuitem', 'option', 'radio', 'listitem'];
+  var TAGS = ['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA'];
+  var DIALOG_TAGS = ['HA-DIALOG', 'HA-MD-DIALOG', 'HA-ADAPTIVE-DIALOG', 'HA-MORE-INFO-DIALOG', 'DIALOG-BOX', 'HA-WA-DIALOG', 'WA-DIALOG', 'HA-BOTTOM-SHEET'];
+
+  // ---- DOM helpers (piercing shadow roots) ---------------------------------
+
+  function collect(root, out) {
+    var els = root.querySelectorAll('*');
+    for (var i = 0; i < els.length; i++) {
+      out.push(els[i]);
+      if (els[i].shadowRoot) collect(els[i].shadowRoot, out);
+    }
+    return out;
+  }
+
+  function isInside(el, container) {
+    var n = el;
+    while (n) {
+      if (n === container) return true;
+      n = n.parentNode ? (n.parentNode.nodeType === 11 ? n.parentNode.host : n.parentNode) : null;
+    }
+    return false;
+  }
+
+  function isVisible(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width < 16 || r.height < 16) return false;
+    // Allow items scrolled above/below the screen (we scroll to them), but not off to the sides.
+    if (r.bottom < -window.innerHeight * 3 || r.right < 0 || r.top > window.innerHeight * 4 || r.left > window.innerWidth) return false;
+    var cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden' || cs.display === 'none' || parseFloat(cs.opacity) === 0) return false;
+    if (el.closest && el.closest('[hidden],[inert]')) return false;
+    return true;
+  }
+
+  function isCandidate(el) {
+    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    var role = el.getAttribute && el.getAttribute('role');
+    var tag = el.tagName;
+    var focusable = el.tabIndex >= 0 || TAGS.indexOf(tag) >= 0;
+    if (!focusable) return false;
+    if (TAGS.indexOf(tag) < 0 && ROLES.indexOf(role) < 0 && !el.hasAttribute('tabindex')) return false;
+    var r = el.getBoundingClientRect();
+    // Skip whole-page containers that happen to be focusable.
+    if (r.width * r.height > window.innerWidth * window.innerHeight * 0.6) return false;
+    return isVisible(el);
+  }
+
+  function openDialog(all) {
+    var found = null;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      var tag = el.tagName;
+      var isDlg = DIALOG_TAGS.indexOf(tag) >= 0 || (el.getAttribute && el.getAttribute('role') === 'dialog') || tag === 'DIALOG';
+      if (!isDlg) continue;
+      if (tag === 'DIALOG' && !el.open) continue;
+      if (el.hasAttribute && el.hasAttribute('open') === false && tag !== 'DIALOG' && DIALOG_TAGS.indexOf(tag) >= 0 && el.getBoundingClientRect().width === 0) continue;
+      if (!isVisible(el)) continue;
+      found = el; // last (topmost) wins
+    }
+    return found;
+  }
+
+  function candidates() {
+    var all = collect(document, []);
+    var dialog = openDialog(all);
+    var list = [];
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (!isCandidate(el)) continue;
+      if (dialog && !isInside(el, dialog)) continue;
+      list.push(el);
+    }
+    // Drop elements that sit exactly on top of another candidate (nested wrappers).
+    return list.filter(function (el) {
+      var r = el.getBoundingClientRect();
+      for (var j = 0; j < list.length; j++) {
+        var o = list[j];
+        if (o === el || !isInside(o, el)) continue;
+        var q = o.getBoundingClientRect();
+        if (Math.abs(q.width - r.width) < 4 && Math.abs(q.height - r.height) < 4) return false;
+      }
+      return true;
+    });
+  }
+
+  // ---- Highlight ------------------------------------------------------------
+
+  function setCurrent(el) {
+    if (current && saved) {
+      current.style.outline = saved.outline;
+      current.style.outlineOffset = saved.outlineOffset;
+      current.style.boxShadow = saved.boxShadow;
+    }
+    current = el;
+    if (!el) { saved = null; return; }
+    saved = { outline: el.style.outline, outlineOffset: el.style.outlineOffset, boxShadow: el.style.boxShadow };
+    el.style.outline = HIGHLIGHT;
+    el.style.outlineOffset = '3px';
+    el.style.boxShadow = '0 0 18px 4px rgba(34,211,197,0.55)';
+    try { el.focus({ preventScroll: true }); } catch (e) {}
+    try { el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }); } catch (e) {}
+  }
+
+  function center(r) { return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }
+
+  function pickStart(list) {
+    // First item in the page content (below the header/tab bar), top-left first.
+    var content = list.filter(function (el) { return el.getBoundingClientRect().top > 70; });
+    var pool = content.length ? content : list;
+    pool.sort(function (a, b) {
+      var ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      return (Math.round(ra.top / 20) - Math.round(rb.top / 20)) || (ra.left - rb.left);
+    });
+    return pool[0] || null;
+  }
+
+  function move(dir) {
+    var list = candidates();
+    if (!list.length) return;
+    if (!current || list.indexOf(current) < 0 || !current.isConnected) { setCurrent(pickStart(list)); return; }
+
+    var r = current.getBoundingClientRect(), c = center(r);
+    var best = null, bestScore = Infinity;
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (el === current) continue;
+      var q = el.getBoundingClientRect(), p = center(q);
+      var dx = p.x - c.x, dy = p.y - c.y, along, across;
+      if (dir === 'right') { if (q.left < r.right - 6 && dx <= 6) continue; along = dx; across = Math.abs(dy); }
+      else if (dir === 'left') { if (q.right > r.left + 6 && dx >= -6) continue; along = -dx; across = Math.abs(dy); }
+      else if (dir === 'down') { if (q.top < r.bottom - 6 && dy <= 6) continue; along = dy; across = Math.abs(dx); }
+      else { if (q.bottom > r.top + 6 && dy >= -6) continue; along = -dy; across = Math.abs(dx); }
+      if (along <= 0) continue;
+      // Prefer items roughly in line with the current one.
+      var overlap = (dir === 'left' || dir === 'right')
+        ? Math.min(r.bottom, q.bottom) - Math.max(r.top, q.top)
+        : Math.min(r.right, q.right) - Math.max(r.left, q.left);
+      var score = along + across * (overlap > 0 ? 0.3 : 1.0);
+      if (score < bestScore) { bestScore = score; best = el; }
+    }
+    if (best) setCurrent(best);
+    else if (dir === 'down' || dir === 'up') window.scrollBy({ top: dir === 'down' ? 300 : -300, behavior: 'smooth' });
+  }
+
+  function deepActive() {
+    var a = document.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    return a;
+  }
+
+  function isTextInput(el) {
+    if (!el) return false;
+    if (el.tagName === 'TEXTAREA') return true;
+    if (el.tagName === 'INPUT') {
+      var t = (el.type || 'text').toLowerCase();
+      return ['text', 'password', 'email', 'number', 'search', 'url', 'tel'].indexOf(t) >= 0;
+    }
+    return el.isContentEditable;
+  }
+
+  function activate() {
+    if (!current || !current.isConnected) { move('down'); return; }
+    var role = current.getAttribute('role');
+    if (isTextInput(current)) { current.focus(); return; } // opens the on-screen keyboard
+    if (role === 'slider') return;                          // left/right adjust sliders natively
+    current.click();
+  }
+
+  var KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Up: 'up', Down: 'down', Left: 'left', Right: 'right' };
+
+  window.addEventListener('keydown', function (e) {
+    var dir = KEYS[e.key];
+    var active = deepActive();
+    var typing = isTextInput(active);
+
+    if (dir) {
+      // While typing, left/right move the text cursor; up/down still leave the field.
+      if (typing && (dir === 'left' || dir === 'right')) return;
+      // Sliders keep left/right for adjusting their value.
+      if (current && current.getAttribute('role') === 'slider' && (dir === 'left' || dir === 'right')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      move(dir);
+      return;
+    }
+    if ((e.key === 'Enter' || e.key === ' ' || e.keyCode === 23) && !typing) {
+      e.preventDefault();
+      e.stopPropagation();
+      activate();
+    }
+  }, true);
+
+  // Called by the app when Back is pressed. Returns 'closed', 'back' or 'none'.
+  window.__hatvBack = function () {
+    var all = collect(document, []);
+    var dialog = openDialog(all);
+    if (dialog) {
+      var esc = { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, composed: true };
+      try { dialog.dispatchEvent(new KeyboardEvent('keydown', esc)); } catch (e) {}
+      try { if (typeof dialog.close === 'function') dialog.close(); } catch (e) {}
+      try { if (typeof dialog.closeDialog === 'function') dialog.closeDialog(); } catch (e) {}
+      setCurrent(null);
+      return 'closed';
+    }
+    var parts = location.pathname.split('/').filter(Boolean);
+    // On a dashboard view other than the first one, go back to the first view.
+    if (parts.length >= 2 && history.length > 1 && parts[1] !== 'home' && parts[1] !== '0') {
+      history.back();
+      setCurrent(null);
+      return 'back';
+    }
+    return 'none';
+  };
+
+  // Highlight the first tile once the dashboard has rendered.
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries++;
+    if (current && current.isConnected) { clearInterval(timer); return; }
+    var list = candidates();
+    if (list.length > 2) { setCurrent(pickStart(list)); clearInterval(timer); }
+    if (tries > 40) clearInterval(timer);
+  }, 500);
+})();

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 16:9 TV launcher banner (320x180dp): navy card with the teal house mark and three "tiles". -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path android:fillColor="#0B1220" android:pathData="M0,0h320v180h-320z" />
+    <path android:fillColor="#22D3C5" android:pathData="M80,40 L124,78 L113,78 L113,130 L92,130 L92,102 L68,102 L68,130 L47,130 L47,78 L36,78 Z" />
+    <path android:fillColor="#0B1220" android:pathData="M75,68h10v10h-10z" />
+    <path android:fillColor="#142033" android:pathData="M150,48h52v38h-52z" />
+    <path android:fillColor="#F2B94B" android:pathData="M210,48h52v38h-52z" />
+    <path android:fillColor="#142033" android:pathData="M150,94h52v38h-52z" />
+    <path android:fillColor="#46D676" android:pathData="M210,94h52v38h-52z" />
+</vector>
