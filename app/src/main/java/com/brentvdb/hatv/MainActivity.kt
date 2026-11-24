@@ -356,6 +356,8 @@ class MainActivity : Activity() {
             }
             view.evaluateJavascript("window.__hatvRoot=" + JSONObject.quote(prefs.areaPath(area)) + ";", null)
             view.evaluateJavascript(navScript, null)
+            // Make sure the remote's keys go to the dashboard, not the (hidden) area picker.
+            if (picker.visibility != View.VISIBLE) view.requestFocus(View.FOCUS_DOWN)
         }
 
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {

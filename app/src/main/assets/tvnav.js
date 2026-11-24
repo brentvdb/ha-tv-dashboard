@@ -12,7 +12,6 @@
 
   var HIGHLIGHT = '4px solid #22D3C5';
   var current = null;
-  var saved = null; // original inline styles of the highlighted element
 
   var ROLES = ['button', 'tab', 'switch', 'checkbox', 'slider', 'link', 'menuitem', 'option', 'radio', 'listitem'];
   var TAGS = ['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA'];
@@ -66,17 +65,38 @@
     return false;
   }
 
+  function composedParent(n) {
+    return n.parentNode ? (n.parentNode.nodeType === 11 ? n.parentNode.host : n.parentNode) : null;
+  }
+
+  // Cards with a tap action (Mushroom cards, many HA cards) are not keyboard-focusable,
+  // but they all show a pointer ("hand") cursor. Treat the outermost element of each
+  // pointer area as a target. Cursor is inherited, so skip children of a pointer parent.
+  function isPointerTarget(el, r) {
+    if (r.width < 40 || r.height < 28) return false;
+    var tag = el.tagName;
+    if (tag === 'HTML' || tag === 'BODY' || tag === 'SVG' || tag === 'PATH' || tag === 'svg' || tag === 'path') return false;
+    var cs = getComputedStyle(el);
+    if (cs.cursor !== 'pointer') return false;
+    var p = composedParent(el);
+    if (p && p.nodeType === 1 && getComputedStyle(p).cursor === 'pointer') return false;
+    return true;
+  }
+
   function isCandidate(el) {
-    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+    if (el.disabled || (el.getAttribute && el.getAttribute('aria-disabled') === 'true')) return false;
     var role = el.getAttribute && el.getAttribute('role');
     var tag = el.tagName;
     var focusable = el.tabIndex >= 0 || TAGS.indexOf(tag) >= 0 || ROVING.indexOf(role) >= 0;
-    if (!focusable) return false;
-    if (hasExcludedAncestor(el)) return false;
-    if (TAGS.indexOf(tag) < 0 && ROLES.indexOf(role) < 0 && !el.hasAttribute('tabindex')) return false;
     var r = el.getBoundingClientRect();
-    // Skip whole-page containers that happen to be focusable.
+    if (r.width < 16 || r.height < 16) return false;
+    // Skip whole-page containers.
     if (r.width * r.height > window.innerWidth * window.innerHeight * 0.6) return false;
+    var ok = false;
+    if (focusable && (TAGS.indexOf(tag) >= 0 || ROLES.indexOf(role) >= 0 || el.hasAttribute('tabindex'))) ok = true;
+    else if (isPointerTarget(el, r)) ok = true;
+    if (!ok) return false;
+    if (hasExcludedAncestor(el)) return false;
     return isVisible(el);
   }
 
@@ -95,7 +115,21 @@
     return found;
   }
 
+  var cache = null, cacheAt = 0;
+
   function candidates() {
+    // Scanning the whole page is costly on TV boxes; reuse the result for a moment.
+    var now = Date.now();
+    if (cache && now - cacheAt < 1200 && (!current || cache.indexOf(current) >= 0)) {
+      var stillOk = cache.every(function (el) { return el.isConnected; });
+      if (stillOk) return cache;
+    }
+    cache = scan();
+    cacheAt = now;
+    return cache;
+  }
+
+  function scan() {
     var all = collect(document, []);
     var dialog = openDialog(all);
     var list = [];
@@ -120,21 +154,47 @@
 
   // ---- Highlight ------------------------------------------------------------
 
-  function setCurrent(el) {
-    if (current && saved) {
-      current.style.outline = saved.outline;
-      current.style.outlineOffset = saved.outlineOffset;
-      current.style.boxShadow = saved.boxShadow;
-    }
-    current = el;
-    if (!el) { saved = null; return; }
-    saved = { outline: el.style.outline, outlineOffset: el.style.outlineOffset, boxShadow: el.style.boxShadow };
-    el.style.outline = HIGHLIGHT;
-    el.style.outlineOffset = '3px';
-    el.style.boxShadow = '0 0 18px 4px rgba(34,211,197,0.55)';
-    try { el.focus({ preventScroll: true }); } catch (e) {}
-    try { el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'smooth' }); } catch (e) {}
+  // The highlight is a separate frame floating above the page, so cards with rounded,
+  // clipped corners (Mushroom, tiles) can't hide it.
+  var ring = null;
+
+  function ensureRing() {
+    if (ring && ring.isConnected) return ring;
+    ring = document.createElement('div');
+    ring.id = 'hatv-ring';
+    ring.style.cssText = 'position:fixed;pointer-events:none;z-index:2147483647;display:none;' +
+      'border:' + HIGHLIGHT + ';border-radius:14px;box-sizing:border-box;' +
+      'box-shadow:0 0 22px 6px rgba(34,211,197,0.55), inset 0 0 12px rgba(34,211,197,0.25);' +
+      'transition:left .12s ease, top .12s ease, width .12s ease, height .12s ease;';
+    document.documentElement.appendChild(ring);
+    return ring;
   }
+
+  function placeRing() {
+    var r0 = ensureRing();
+    if (!current || !current.isConnected) { r0.style.display = 'none'; return; }
+    var r = current.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) { r0.style.display = 'none'; return; }
+    var pad = 5;
+    r0.style.left = (r.left - pad) + 'px';
+    r0.style.top = (r.top - pad) + 'px';
+    r0.style.width = (r.width + pad * 2) + 'px';
+    r0.style.height = (r.height + pad * 2) + 'px';
+    r0.style.display = 'block';
+  }
+
+  function setCurrent(el) {
+    current = el;
+    if (!el) { placeRing(); return; }
+    try { el.focus({ preventScroll: true }); } catch (e) {}
+    try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) {}
+    placeRing();
+  }
+
+  // Keep the frame on its card while the page scrolls, re-renders or animates.
+  window.addEventListener('scroll', placeRing, true);
+  window.addEventListener('resize', placeRing);
+  setInterval(placeRing, 300);
 
   function center(r) { return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; }
 
@@ -195,12 +255,33 @@
     return el.isContentEditable;
   }
 
+  // Press like a real finger/mouse would (down, up, click at the card's centre).
+  // Home Assistant's tap/hold handler (used by Mushroom and most cards) listens to the
+  // press and release, while plain buttons react to the click: either way it fires once.
+  function tap(el) {
+    var r = el.getBoundingClientRect();
+    var x = r.left + r.width / 2, y = r.top + r.height / 2;
+    var base = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, view: window };
+    function fire(type, Ctor, extra) {
+      var init = Object.assign({}, base, extra || {});
+      var ev;
+      try { ev = new Ctor(type, init); } catch (e) { ev = new MouseEvent(type, init); }
+      el.dispatchEvent(ev);
+    }
+    var P = window.PointerEvent || MouseEvent;
+    fire('pointerdown', P, { pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 1 });
+    fire('mousedown', MouseEvent, { buttons: 1 });
+    fire('pointerup', P, { pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: 0 });
+    fire('mouseup', MouseEvent, { buttons: 0 });
+    fire('click', MouseEvent, { detail: 1 });
+  }
+
   function activate() {
     if (!current || !current.isConnected) { move('down'); return; }
     var role = current.getAttribute('role');
     if (isTextInput(current)) { current.focus(); return; } // opens the on-screen keyboard
     if (role === 'slider') return;                          // left/right adjust sliders natively
-    current.click();
+    tap(current);
   }
 
   var KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Up: 'up', Down: 'down', Left: 'left', Right: 'right' };
