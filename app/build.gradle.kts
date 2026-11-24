@@ -11,8 +11,8 @@ android {
         applicationId = "com.brentvdb.hatv"
         minSdk = 23
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.2.1"
     }
 
     // A fixed signing key kept in the repo, so every CI build can be installed

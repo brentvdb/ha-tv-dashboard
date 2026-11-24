@@ -54,7 +54,8 @@
 
   // The sidebar and its ☰ menu button are not used on the TV (the app has its own
   // area picker); opening the sidebar drawer would trap the highlight behind it.
-  var EXCLUDE_INSIDE = ['HA-SIDEBAR', 'HA-MENU-BUTTON', 'HA-DRAWER', 'MWC-DRAWER'];
+  // Note: HA-DRAWER must NOT be listed – in Home Assistant it wraps the whole app, dashboard included.
+  var EXCLUDE_INSIDE = ['HA-SIDEBAR', 'HA-MENU-BUTTON'];
 
   function hasExcludedAncestor(el) {
     var n = el;
