@@ -2,6 +2,9 @@ package com.brentvdb.hatv
 
 import android.content.Context
 
+/** One choice on the start screen. */
+data class Area(val key: String, val title: String, val subtitle: String, val defaultPath: String)
+
 /** App settings, stored locally on the TV. */
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("hatv", Context.MODE_PRIVATE)
@@ -10,12 +13,15 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_SERVER, DEFAULT_SERVER) ?: DEFAULT_SERVER
         set(v) = sp.edit().putString(KEY_SERVER, v.trim().trimEnd('/')).apply()
 
-    var dashboardPath: String
-        get() = sp.getString(KEY_PATH, DEFAULT_PATH) ?: DEFAULT_PATH
-        set(v) {
-            val p = v.trim().ifEmpty { DEFAULT_PATH }
-            sp.edit().putString(KEY_PATH, if (p.startsWith("/")) p else "/$p").apply()
-        }
+    /** Dashboard page opened for an area, e.g. /main-house/home */
+    fun areaPath(area: Area): String = sp.getString("path_${area.key}", area.defaultPath) ?: area.defaultPath
+
+    fun setAreaPath(area: Area, value: String) {
+        val p = value.trim().ifEmpty { area.defaultPath }
+        sp.edit().putString("path_${area.key}", if (p.startsWith("/")) p else "/$p").apply()
+    }
+
+    fun areaUrl(area: Area): String = serverUrl + areaPath(area)
 
     /** Optional Home Assistant long-lived access token for automatic login. */
     var accessToken: String
@@ -31,8 +37,6 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_SCREEN, true)
         set(v) = sp.edit().putBoolean(KEY_SCREEN, v).apply()
 
-    val dashboardUrl: String get() = serverUrl + dashboardPath
-
     /** Scheme + host + port only, e.g. http://192.168.0.29 */
     val origin: String
         get() = try {
@@ -43,13 +47,21 @@ class Prefs(context: Context) {
             serverUrl
         }
 
+    /** Everything that, when changed, requires the dashboard view to be rebuilt. */
+    val pageConfig: String
+        get() = listOf(serverUrl, accessToken, zoomPercent).joinToString("|")
+
     companion object {
         const val DEFAULT_SERVER = "http://192.168.0.29"
-        const val DEFAULT_PATH = "/tv-dashboard/home"
         private const val KEY_SERVER = "server_url"
-        private const val KEY_PATH = "dashboard_path"
         private const val KEY_TOKEN = "access_token"
         private const val KEY_ZOOM = "zoom_percent"
         private const val KEY_SCREEN = "keep_screen_on"
+
+        val AREAS = listOf(
+            Area("main", "Main House", "Downstairs", "/main-house/home"),
+            Area("upstairs", "Upstairs House", "The flat", "/upstairs-house/home"),
+            Area("irrigation", "Irrigation", "Garden stations & schedule", "/irrigation-control/control"),
+        )
     }
 }

@@ -49,12 +49,30 @@
     return true;
   }
 
+  // Roles that use "roving focus": only one item in the group is focusable at a time
+  // (e.g. Home Assistant's view tabs), so the others must be reachable anyway.
+  var ROVING = ['tab', 'menuitem', 'option', 'radio', 'treeitem'];
+
+  // The sidebar and its ☰ menu button are not used on the TV (the app has its own
+  // area picker); opening the sidebar drawer would trap the highlight behind it.
+  var EXCLUDE_INSIDE = ['HA-SIDEBAR', 'HA-MENU-BUTTON', 'HA-DRAWER', 'MWC-DRAWER'];
+
+  function hasExcludedAncestor(el) {
+    var n = el;
+    while (n) {
+      if (n.tagName && EXCLUDE_INSIDE.indexOf(n.tagName) >= 0) return true;
+      n = n.parentNode ? (n.parentNode.nodeType === 11 ? n.parentNode.host : n.parentNode) : null;
+    }
+    return false;
+  }
+
   function isCandidate(el) {
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
     var role = el.getAttribute && el.getAttribute('role');
     var tag = el.tagName;
-    var focusable = el.tabIndex >= 0 || TAGS.indexOf(tag) >= 0;
+    var focusable = el.tabIndex >= 0 || TAGS.indexOf(tag) >= 0 || ROVING.indexOf(role) >= 0;
     if (!focusable) return false;
+    if (hasExcludedAncestor(el)) return false;
     if (TAGS.indexOf(tag) < 0 && ROLES.indexOf(role) < 0 && !el.hasAttribute('tabindex')) return false;
     var r = el.getBoundingClientRect();
     // Skip whole-page containers that happen to be focusable.
@@ -152,6 +170,8 @@
       var overlap = (dir === 'left' || dir === 'right')
         ? Math.min(r.bottom, q.bottom) - Math.max(r.top, q.top)
         : Math.min(r.right, q.right) - Math.max(r.left, q.left);
+      // Left/right stay on the same row (e.g. along the tab bar); up/down may change column.
+      if ((dir === 'left' || dir === 'right') && overlap <= 0) continue;
       var score = along + across * (overlap > 0 ? 0.3 : 1.0);
       if (score < bestScore) { bestScore = score; best = el; }
     }
@@ -219,9 +239,10 @@
       setCurrent(null);
       return 'closed';
     }
-    var parts = location.pathname.split('/').filter(Boolean);
-    // On a dashboard view other than the first one, go back to the first view.
-    if (parts.length >= 2 && history.length > 1 && parts[1] !== 'home' && parts[1] !== '0') {
+    // On another view/page of this area, go back towards the area's start page
+    // (window.__hatvRoot is set by the app). On the start page, the app shows its area picker.
+    var root = window.__hatvRoot || '';
+    if (root && location.pathname !== root && history.length > 1) {
       history.back();
       setCurrent(null);
       return 'back';

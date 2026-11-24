@@ -6,10 +6,10 @@ Target devices: Xiaomi Mi Box (Gen 3), Chromecast with Google TV, and other Andr
 
 ## What it does
 
-- Opens your Home Assistant dashboard full-screen, with the sidebar hidden. By default that's `http://192.168.0.29/tv-dashboard/home`.
-- **Arrow keys** move a bright teal highlight between tiles, view tabs and buttons, including inside pop-ups.
+- Opens on an **area picker** with **Main House**, **Upstairs House** and **Irrigation**. Choosing one opens that area's dashboard full-screen, with the sidebar hidden.
+- **Arrow keys** move a bright teal highlight between tiles, the view tabs along the top, and buttons, including inside pop-ups. Left/Right stay on the same row.
 - **OK / Select** presses the highlighted item, e.g. toggles a light.
-- **Back** closes an open pop-up first, then goes back a view, then exits if you press it twice.
+- **Back** closes an open pop-up first, then goes back within the area, then returns to the area picker. On the picker, press Back twice to exit.
 - **Long-press Back** (or the Menu key) opens **Settings**.
 - Keeps the screen on while the dashboard is open (this can be turned off).
 - If Home Assistant can't be reached, it shows a message and retries every 10 seconds.
@@ -37,7 +37,9 @@ To sign out, open **Settings → Sign out / clear data**.
 | Setting | Default | Notes |
 |---|---|---|
 | Home Assistant address | `http://192.168.0.29` | Add `:8123` if your server uses that port. |
-| Dashboard page | `/tv-dashboard/home` | Any dashboard path works. |
+| Main House page | `/main-house/home` | Dashboard opened for Main House. |
+| Upstairs House page | `/upstairs-house/home` | Dashboard opened for Upstairs House. |
+| Irrigation page | `/irrigation-control/control` | Dashboard opened for Irrigation. |
 | Access token | *(empty)* | Optional automatic sign-in. |
 | Zoom % | `100` | Try 125–150 if the tiles look small on a big screen. |
 | Keep screen on | on | |
@@ -54,4 +56,4 @@ The APK ends up in `app/build/outputs/apk/debug/`.
 
 ## How the remote navigation works
 
-The file `app/src/main/assets/tvnav.js` is injected into every Home Assistant page. It looks through Home Assistant's shadow DOM for focusable controls (tiles, tabs, buttons, switches), picks the nearest control in the pressed direction, and highlights it. When a pop-up is open, it limits navigation to that pop-up.
+The file `app/src/main/assets/tvnav.js` is injected into every Home Assistant page. It looks through Home Assistant's shadow DOM for focusable controls (tiles, tabs, buttons, switches), picks the nearest control in the pressed direction, and highlights it. It includes view tabs that only become focusable when active ("roving focus"). It skips the sidebar and its ☰ button, because the app's area picker replaces them. When a pop-up is open, it limits navigation to that pop-up.

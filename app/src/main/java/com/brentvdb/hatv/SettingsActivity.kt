@@ -44,8 +44,10 @@ class SettingsActivity : Activity() {
 
         val server = field(column, "Home Assistant address", prefs.serverUrl,
             "e.g. http://192.168.0.29  (include :8123 if your server uses it)", InputType.TYPE_TEXT_VARIATION_URI)
-        val path = field(column, "Dashboard page", prefs.dashboardPath,
-            "e.g. /tv-dashboard/home", InputType.TYPE_TEXT_VARIATION_URI)
+        val areaFields = Prefs.AREAS.map { area ->
+            area to field(column, "${area.title} – dashboard page", prefs.areaPath(area),
+                "e.g. ${area.defaultPath}", InputType.TYPE_TEXT_VARIATION_URI)
+        }
         val token = field(column, "Access token (optional – automatic sign-in)", prefs.accessToken,
             "Leave empty to sign in once with your username and password", InputType.TYPE_TEXT_VARIATION_PASSWORD)
         val zoom = field(column, "Zoom %", prefs.zoomPercent.toString(),
@@ -64,7 +66,7 @@ class SettingsActivity : Activity() {
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.START }
         buttons.addView(button("Save") {
             prefs.serverUrl = server.text.toString().ifBlank { Prefs.DEFAULT_SERVER }
-            prefs.dashboardPath = path.text.toString()
+            areaFields.forEach { (area, edit) -> prefs.setAreaPath(area, edit.text.toString()) }
             prefs.accessToken = token.text.toString()
             prefs.zoomPercent = zoom.text.toString().toIntOrNull() ?: 100
             prefs.keepScreenOn = keepOn.isChecked

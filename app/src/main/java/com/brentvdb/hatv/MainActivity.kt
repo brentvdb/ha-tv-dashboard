@@ -4,41 +4,60 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import android.widget.Toast
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import org.json.JSONObject
 
 /**
- * Full-screen Home Assistant dashboard for Android TV / Google TV.
+ * Home Assistant for Android TV / Google TV.
  *
- * Remote controls:
+ * Opens on an area picker (Main House / Upstairs House / Irrigation). Choosing an area
+ * shows that area's dashboard full-screen.
+ *
+ * Remote controls on a dashboard:
  *  - Arrow keys move a highlight between tiles, tabs and buttons (tvnav.js)
  *  - OK / Select activates the highlighted item
- *  - Back closes pop-ups, then goes back, then (press twice) exits
+ *  - Back closes pop-ups, then goes back within the area, then returns to the area picker
  *  - Long-press Back, or the Menu key, opens Settings
  */
 class MainActivity : Activity() {
 
     private lateinit var web: WebView
+    private lateinit var picker: View
     private lateinit var prefs: Prefs
+    private val areaCards = mutableListOf<View>()
     private var navScript = ""
     private val handler = Handler(Looper.getMainLooper())
+
+    private var currentArea: Area? = null
+    private var lastAreaIndex = 0
     private var loadedConfig = ""
+    private var startScriptInstalled = false
+    private var clearHistoryOnLoad = false
+    private var showingError = false
     private var lastBackPress = 0L
     private var backLongPressed = false
-    private var showingError = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -47,24 +66,26 @@ class MainActivity : Activity() {
         navScript = assets.open("tvnav.js").bufferedReader().use { it.readText() }
 
         web = WebView(this).apply {
-            setBackgroundColor(Color.parseColor("#0B1220"))
+            setBackgroundColor(BG)
             isFocusable = true
             isFocusableInTouchMode = true
+            visibility = View.GONE
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
-            settings.databaseEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
             settings.loadWithOverviewMode = true
-            settings.userAgentString = settings.userAgentString + " HomeAssistantTV/1.0"
+            settings.userAgentString = settings.userAgentString + " HomeAssistantTV/1.1"
             webChromeClient = WebChromeClient()
             webViewClient = DashboardClient()
         }
-        setContentView(web)
-        hideSystemUi()
+        picker = buildPicker()
 
-        if (savedInstanceState == null && prefs.serverUrl.isBlank()) {
-            openSettings()
-        }
+        setContentView(FrameLayout(this).apply {
+            setBackgroundColor(BG)
+            addView(web, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(picker, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        })
+        hideSystemUi()
     }
 
     override fun onResume() {
@@ -72,8 +93,7 @@ class MainActivity : Activity() {
         if (prefs.keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // (Re)load whenever the settings that affect the page have changed.
-        val config = listOf(prefs.dashboardUrl, prefs.accessToken, prefs.zoomPercent).joinToString("|")
+        val config = prefs.pageConfig
         if (config != loadedConfig) {
             if (loadedConfig.isNotEmpty() && startScriptInstalled) {
                 // The start-up script is baked into this WebView; rebuild it with the new settings.
@@ -83,15 +103,118 @@ class MainActivity : Activity() {
             loadedConfig = config
             applyZoom()
             installStartScript()
-            showingError = false
-            web.loadUrl(prefs.dashboardUrl)
         }
-        web.requestFocus()
+        if (picker.visibility == View.VISIBLE) areaCards.getOrNull(lastAreaIndex)?.requestFocus()
+        else web.requestFocus()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideSystemUi()
+    }
+
+    // ---- Area picker -------------------------------------------------------
+
+    private fun buildPicker(): View {
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(BG)
+        }
+        column.addView(TextView(this).apply {
+            text = "Home Assistant"
+            textSize = 40f
+            setTypeface(typeface, Typeface.BOLD)
+            setTextColor(ACCENT)
+            gravity = Gravity.CENTER
+        })
+        column.addView(TextView(this).apply {
+            text = "Choose your area"
+            textSize = 22f
+            setTextColor(MUTED)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(6), 0, dp(36))
+        })
+
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        Prefs.AREAS.forEachIndexed { index, area ->
+            val card = areaCard(area) { openArea(index) }
+            areaCards.add(card)
+            row.addView(card, LinearLayout.LayoutParams(dp(250), dp(170)).apply {
+                leftMargin = dp(14); rightMargin = dp(14)
+            })
+        }
+        column.addView(row)
+
+        column.addView(TextView(this).apply {
+            text = "⚙  Settings"
+            textSize = 18f
+            setTextColor(TEXT)
+            gravity = Gravity.CENTER
+            isFocusable = true
+            isClickable = true
+            background = focusFrame(SURFACE, 3)
+            setPadding(dp(22), dp(10), dp(22), dp(10))
+            setOnClickListener { openSettings() }
+        }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(40) })
+
+        column.addView(TextView(this).apply {
+            text = "On a dashboard: arrows move · OK selects · Back returns here · long-press Back = Settings"
+            textSize = 15f
+            setTextColor(MUTED)
+            gravity = Gravity.CENTER
+            setPadding(0, dp(18), 0, 0)
+        })
+        return column
+    }
+
+    private fun areaCard(area: Area, onClick: () -> Unit): View =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            isFocusable = true
+            isClickable = true
+            background = focusFrame(SURFACE, 5)
+            addView(TextView(context).apply {
+                text = area.title
+                textSize = 26f
+                setTypeface(typeface, Typeface.BOLD)
+                setTextColor(TEXT)
+                gravity = Gravity.CENTER
+            })
+            addView(TextView(context).apply {
+                text = area.subtitle
+                textSize = 16f
+                setTextColor(MUTED)
+                gravity = Gravity.CENTER
+                setPadding(dp(8), dp(6), dp(8), 0)
+            })
+            setOnClickListener { onClick() }
+            setOnFocusChangeListener { v, has ->
+                v.animate().scaleX(if (has) 1.08f else 1f).scaleY(if (has) 1.08f else 1f).setDuration(120).start()
+            }
+        }
+
+    private fun openArea(index: Int) {
+        val area = Prefs.AREAS[index]
+        lastAreaIndex = index
+        currentArea = area
+        showingError = false
+        clearHistoryOnLoad = true
+        picker.visibility = View.GONE
+        web.visibility = View.VISIBLE
+        web.loadUrl(prefs.areaUrl(area))
+        web.requestFocus()
+    }
+
+    private fun showPicker() {
+        handler.removeCallbacksAndMessages(null)
+        currentArea = null
+        showingError = false
+        web.loadUrl("about:blank") // stops camera streams etc. while the picker is showing
+        web.visibility = View.GONE
+        picker.visibility = View.VISIBLE
+        areaCards.getOrNull(lastAreaIndex)?.requestFocus()
     }
 
     // ---- Remote keys -------------------------------------------------------
@@ -109,7 +232,7 @@ class MainActivity : Activity() {
                 openSettings(); return true
             }
             KeyEvent.KEYCODE_PROG_RED -> {
-                web.reload(); return true
+                if (currentArea != null) web.reload(); return true
             }
         }
         return super.onKeyDown(keyCode, event)
@@ -133,13 +256,14 @@ class MainActivity : Activity() {
         return super.onKeyUp(keyCode, event)
     }
 
-    /** Back: close an open pop-up first, then go back a page, then exit on a double press. */
+    /** Back: close a pop-up, then go back within the area, then return to the area picker, then exit. */
     private fun handleBack() {
-        if (showingError) { exitWithDoublePress(); return }
+        if (picker.visibility == View.VISIBLE) { exitWithDoublePress(); return }
+        if (showingError) { showPicker(); return }
         web.evaluateJavascript("(window.__hatvBack ? window.__hatvBack() : 'none')") { result ->
             when (result?.trim('"')) {
                 "closed", "back" -> Unit
-                else -> if (web.canGoBack()) web.goBack() else exitWithDoublePress()
+                else -> showPicker()
             }
         }
     }
@@ -196,11 +320,9 @@ class MainActivity : Activity() {
         return sb.toString()
     }
 
-    private var startScriptInstalled = false
-
     private fun installStartScript() {
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) && !startScriptInstalled) {
-            // Installed once per WebView; if settings change, the activity is recreated by SettingsActivity.
+            // Installed once per WebView; if settings change, the activity is recreated.
             WebViewCompat.addDocumentStartJavaScript(web, startScript(), setOf(prefs.origin))
             startScriptInstalled = true
         }
@@ -218,19 +340,26 @@ class MainActivity : Activity() {
 
         override fun onPageFinished(view: WebView, url: String) {
             super.onPageFinished(view, url)
-            if (showingError) return
+            val area = currentArea ?: return
+            if (showingError || url == "about:blank") return
+            if (clearHistoryOnLoad) {
+                // Each area starts with a fresh history, so Back never jumps into another area.
+                view.clearHistory()
+                clearHistoryOnLoad = false
+            }
             // Older WebViews without document-start scripts: apply settings now, and if that
             // just signed us in on the login page, reload into the dashboard.
             if (!startScriptInstalled) {
                 view.evaluateJavascript(startScript() + "(window.__hatvTokenSet?'set':'')") { r ->
-                    if (r?.contains("set") == true && url.contains("/auth/")) view.loadUrl(prefs.dashboardUrl)
+                    if (r?.contains("set") == true && url.contains("/auth/")) view.loadUrl(prefs.areaUrl(area))
                 }
             }
+            view.evaluateJavascript("window.__hatvRoot=" + JSONObject.quote(prefs.areaPath(area)) + ";", null)
             view.evaluateJavascript(navScript, null)
         }
 
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-            if (!request.isForMainFrame) return
+            if (!request.isForMainFrame || currentArea == null) return
             showError(view, error.description?.toString() ?: "Connection error")
         }
 
@@ -242,6 +371,7 @@ class MainActivity : Activity() {
     }
 
     private fun showError(view: WebView, reason: String) {
+        val area = currentArea ?: return
         showingError = true
         val safeReason = reason.replace("<", "&lt;")
         val html = """
@@ -249,22 +379,50 @@ class MainActivity : Activity() {
               display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
             <div style="text-align:center;max-width:70%">
               <h1 style="color:#F2B94B">Can't reach Home Assistant</h1>
-              <p style="font-size:22px">${prefs.dashboardUrl}</p>
+              <p style="font-size:22px">${prefs.areaUrl(area)}</p>
               <p style="color:#93A4BA">$safeReason</p>
-              <p style="font-size:22px">Retrying in 10 seconds… Long-press <b>Back</b> for Settings.</p>
+              <p style="font-size:22px">Retrying in 10 seconds… Press <b>Back</b> for the area menu,
+              long-press <b>Back</b> for Settings.</p>
             </div></body></html>
         """.trimIndent()
         view.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
         handler.removeCallbacksAndMessages(null)
         handler.postDelayed({
-            showingError = false
-            web.loadUrl(prefs.dashboardUrl)
+            if (currentArea == area) {
+                showingError = false
+                web.loadUrl(prefs.areaUrl(area))
+            }
         }, 10_000)
     }
+
+    // ---- Styling helpers ---------------------------------------------------
+
+    /** Card background with a thick teal frame when focused, so the remote's position is obvious. */
+    private fun focusFrame(fill: Int, focusStrokeDp: Int) = StateListDrawable().apply {
+        addState(intArrayOf(android.R.attr.state_focused), rounded(fill, ACCENT, focusStrokeDp))
+        addState(intArrayOf(), rounded(fill, BORDER, 1))
+    }
+
+    private fun rounded(fill: Int, stroke: Int, strokeDp: Int) = GradientDrawable().apply {
+        setColor(fill)
+        cornerRadius = dp(16).toFloat()
+        setStroke(dp(strokeDp), stroke)
+    }
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         web.destroy()
         super.onDestroy()
+    }
+
+    companion object {
+        private val BG = Color.parseColor("#0B1220")
+        private val SURFACE = Color.parseColor("#142033")
+        private val BORDER = Color.parseColor("#24334A")
+        private val ACCENT = Color.parseColor("#22D3C5")
+        private val TEXT = Color.parseColor("#E6EDF5")
+        private val MUTED = Color.parseColor("#93A4BA")
     }
 }
