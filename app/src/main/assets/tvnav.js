@@ -74,8 +74,11 @@
   // pointer area as a target. Cursor is inherited, so skip children of a pointer parent.
   function isPointerTarget(el, r) {
     if (r.width < 40 || r.height < 28) return false;
-    var tag = el.tagName;
-    if (tag === 'HTML' || tag === 'BODY' || tag === 'SVG' || tag === 'PATH' || tag === 'svg' || tag === 'path') return false;
+    // Cheap check first: Home Assistant's tap/hold handler (used by Mushroom and most
+    // cards) stores an `actionHandler` property on the element it is attached to.
+    if (el.actionHandler) return true;
+    // Fallback for other cards: an HA card showing the pointer cursor.
+    if (el.tagName !== 'HA-CARD') return false;
     var cs = getComputedStyle(el);
     if (cs.cursor !== 'pointer') return false;
     var p = composedParent(el);
@@ -279,10 +282,60 @@
   function activate() {
     if (!current || !current.isConnected) { move('down'); return; }
     var role = current.getAttribute('role');
-    if (isTextInput(current)) { current.focus(); return; } // opens the on-screen keyboard
-    if (role === 'slider') return;                          // left/right adjust sliders natively
+    if (isTextInput(current)) {
+      current.focus();
+      if (window.HATV && HATV.showKeyboard) HATV.showKeyboard(); // ask the app for the on-screen keyboard
+      return;
+    }
+    if (role === 'slider') return; // left/right adjust sliders natively
     tap(current);
   }
+
+  // ---- Status label (helps diagnose pages where nothing can be selected) ----
+
+  var statusEl = null, statusTimer = null;
+  function status(text, ms) {
+    if (!statusEl || !statusEl.isConnected) {
+      statusEl = document.createElement('div');
+      statusEl.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;pointer-events:none;' +
+        'background:rgba(11,18,32,0.88);color:#E6EDF5;border:2px solid #22D3C5;border-radius:12px;' +
+        'padding:8px 14px;font:16px sans-serif;transition:opacity .3s;';
+      document.documentElement.appendChild(statusEl);
+    }
+    statusEl.textContent = text;
+    statusEl.style.opacity = '1';
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(function () { statusEl.style.opacity = '0'; }, ms || 3000);
+  }
+
+  // ---- Key handling ---------------------------------------------------------
+
+  // The app forwards the remote's keys here directly (so it works whatever Android thinks
+  // has focus): 'up' | 'down' | 'left' | 'right' | 'ok'.
+  window.__hatvKey = function (key) {
+    try {
+      if (key === 'ok') { activate(); return 'ok'; }
+      if (current && current.getAttribute('role') === 'slider' && (key === 'left' || key === 'right')) {
+        current.dispatchEvent(new KeyboardEvent('keydown', { key: key === 'left' ? 'ArrowLeft' : 'ArrowRight', bubbles: true, composed: true }));
+        return 'slider';
+      }
+      var list = candidates();
+      if (!list.length) { status('No selectable items found on this page'); return 'none'; }
+      move(key);
+      return 'moved';
+    } catch (e) {
+      status('Navigation error: ' + e.message, 6000);
+      return 'error';
+    }
+  };
+
+  // Tell the app when a text box has focus, so it lets typing keys through normally.
+  function reportTyping() {
+    if (window.HATV && HATV.typing) HATV.typing(isTextInput(deepActive()));
+  }
+  document.addEventListener('focusin', reportTyping, true);
+  document.addEventListener('focusout', function () { setTimeout(reportTyping, 0); }, true);
+  reportTyping(); // e.g. the sign-in page focuses its username box before we are injected
 
   var KEYS = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Up: 'up', Down: 'down', Left: 'left', Right: 'right' };
 
@@ -331,13 +384,22 @@
     return 'none';
   };
 
-  // Highlight the first tile once the dashboard has rendered.
+  // Highlight the first item once the dashboard has rendered (checks once a second,
+  // for up to 15 seconds), and show how many selectable items were found.
   var tries = 0;
   var timer = setInterval(function () {
     tries++;
     if (current && current.isConnected) { clearInterval(timer); return; }
-    var list = candidates();
-    if (list.length > 2) { setCurrent(pickStart(list)); clearInterval(timer); }
-    if (tries > 40) clearInterval(timer);
-  }, 500);
+    var t0 = Date.now();
+    var list = scan();
+    cache = list; cacheAt = Date.now();
+    if (list.length > 2) {
+      setCurrent(pickStart(list));
+      clearInterval(timer);
+      status('TV remote ready · ' + list.length + ' items (' + (Date.now() - t0) + ' ms)');
+    } else if (tries >= 15) {
+      clearInterval(timer);
+      status('TV remote: found only ' + list.length + ' selectable items', 6000);
+    }
+  }, 1000);
 })();

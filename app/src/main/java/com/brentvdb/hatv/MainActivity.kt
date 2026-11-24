@@ -16,6 +16,8 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -77,6 +79,7 @@ class MainActivity : Activity() {
             settings.userAgentString = settings.userAgentString + " HomeAssistantTV/1.1"
             webChromeClient = WebChromeClient()
             webViewClient = DashboardClient()
+            addJavascriptInterface(Bridge(), "HATV")
         }
         picker = buildPicker()
 
@@ -200,6 +203,7 @@ class MainActivity : Activity() {
         lastAreaIndex = index
         currentArea = area
         showingError = false
+        pageTyping = false
         clearHistoryOnLoad = true
         picker.visibility = View.GONE
         web.visibility = View.VISIBLE
@@ -211,6 +215,7 @@ class MainActivity : Activity() {
         handler.removeCallbacksAndMessages(null)
         currentArea = null
         showingError = false
+        pageTyping = false
         web.loadUrl("about:blank") // stops camera streams etc. while the picker is showing
         web.visibility = View.GONE
         picker.visibility = View.VISIBLE
@@ -218,6 +223,54 @@ class MainActivity : Activity() {
     }
 
     // ---- Remote keys -------------------------------------------------------
+
+    /** True while a text box on the page has focus (reported by tvnav.js). */
+    @Volatile private var pageTyping = false
+
+    /** Small bridge the page script uses to talk to the app. */
+    private inner class Bridge {
+        @JavascriptInterface
+        fun typing(isTyping: Boolean) { pageTyping = isTyping }
+
+        @JavascriptInterface
+        fun showKeyboard() {
+            runOnUiThread {
+                web.requestFocus()
+                val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.showSoftInput(web, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+    }
+
+    /**
+     * On a dashboard, the arrow keys and OK are sent straight to the page's navigation
+     * script, so they work no matter which view Android thinks has focus. While a text box
+     * is focused (e.g. the sign-in page), keys go to the page normally so typing works.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (web.visibility == View.VISIBLE && currentArea != null && !showingError && !pageTyping) {
+            val key = when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> "up"
+                KeyEvent.KEYCODE_DPAD_DOWN -> "down"
+                KeyEvent.KEYCODE_DPAD_LEFT -> "left"
+                KeyEvent.KEYCODE_DPAD_RIGHT -> "right"
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "ok"
+                else -> null
+            }
+            if (key != null) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    web.evaluateJavascript("(window.__hatvKey ? window.__hatvKey('$key') : 'not-loaded')") { r ->
+                        if (r?.contains("not-loaded") == true) {
+                            // The page script isn't there yet (still loading); inject it now.
+                            web.evaluateJavascript(navScript, null)
+                        }
+                    }
+                }
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         when (keyCode) {
